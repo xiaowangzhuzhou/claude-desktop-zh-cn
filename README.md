@@ -1,6 +1,6 @@
 # Claude Desktop 中文补丁（zh-CN）
 
-一个用于 macOS 版 Claude Desktop 的中文界面补丁。把本项目下载到本地后，双击 `install.command`，即可给 Claude Desktop 添加 `中文（中国）` 语言选项，并安装中文界面资源。
+一个用于 Claude Desktop 的中文界面补丁。macOS 可双击 `install.command`，Windows 可右键管理员运行 `install-windows.bat`，给 Claude Desktop 添加 `中文（中国）` 语言选项，并安装中文界面资源。
 
 本汉化方案仅支持使用 API 的方式。请先参照 https://linux.do/t/topic/2032192 配置
 
@@ -10,21 +10,24 @@
 
 ## 功能特点
 
-- 一键安装 Claude Desktop 中文界面资源。
+- 一键安装 Claude Desktop 中文界面资源，支持 macOS 和 Windows。
 - 自动给 Claude 前端语言白名单加入 `zh-CN`。
-- 自动合并当前 Claude 版本的英文语言文件与随包中文翻译。
+- macOS 自动合并当前 Claude 版本的英文语言文件与随包中文翻译。
 - 新版本新增但暂未翻译的字段会保留英文，避免界面缺失文本。
-- 自动绕过新版 Claude Desktop 对 3P gateway 模型名的本地 Anthropic 校验，避免 `deepseek-v4-pro` / `kimi-*` 等模型名导致配置整体失效。
-- 安装前自动备份原始 `/Applications/Claude.app`。
+- macOS 自动绕过新版 Claude Desktop 对 3P gateway 模型名的本地 Anthropic 校验，避免 `deepseek-v4-pro` / `kimi-*` 等模型名导致配置整体失效。
+- macOS 安装前自动备份原始 `/Applications/Claude.app`。
 - 自动写入 Claude 用户配置，将语言设置为 `zh-CN`。
 
 ## 适用环境
 
-- macOS
+- macOS 或 Windows
 - 已安装 Claude Desktop
-- 系统自带 Python 3（通常路径为 `/usr/bin/python3`）
+- macOS 需要系统自带 Python 3（通常路径为 `/usr/bin/python3`）
+- Windows 需要 PowerShell，并建议以管理员权限运行
 
 ## 使用方式
+
+### macOS
 
 1. 退出 Claude Desktop。
 2. 下载或克隆本项目。
@@ -39,6 +42,23 @@
 cd /path/to/claude-desktop-zh-cn
 sudo /usr/bin/python3 patch_claude_zh_cn.py --user-home "$HOME" --launch
 ```
+
+### Windows
+
+1. 退出 Claude Desktop。
+2. 下载或克隆本项目。
+3. 右键 `install-windows.bat`，选择以管理员身份运行。
+4. 脚本会写入本仓库 `resources` 目录里的中文 JSON，并重启 Claude Desktop。
+5. 如果没有自动切换，打开左下角账号菜单，选择 `Language` -> `中文（中国）`。
+
+也可以在 PowerShell 中运行：
+
+```powershell
+cd path\to\claude-desktop-zh-cn
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install_windows.ps1 install
+```
+
+Windows 版当前只做界面汉化，不修改 `app.asar`，也不处理 3P gateway 模型名校验。
 
 ## 从 GitHub 下载
 
@@ -58,6 +78,8 @@ chmod +x install.command
 ## 文件说明
 
 - `install.command`：双击运行入口。
+- `install-windows.bat`：Windows 双击 / 管理员运行入口。
+- `install_windows.ps1`：Windows 汉化安装和卸载脚本。
 - `patch_claude_zh_cn.py`：真正执行补丁的 Python 脚本。
 - `resources/manifest.json`：语言包信息。
 - `resources/frontend-zh-CN.json`：Claude 前端界面中文翻译。
@@ -65,7 +87,7 @@ chmod +x install.command
 - `resources/Localizable.strings`：macOS 原生菜单中文资源。
 - `resources/statsig-zh-CN.json`：statsig i18n 兜底资源。
 
-## 脚本会做什么
+## macOS 脚本会做什么
 
 - 备份当前 `/Applications/Claude.app` 到同目录，名字类似：
   `Claude.backup-before-zh-CN-20260424-120000.app`
@@ -78,9 +100,22 @@ chmod +x install.command
 - 对修改后的 Claude.app 及其内部 app/framework/原生二进制做一致的本机 ad-hoc 重签名，并清除 `com.apple.quarantine` 隔离属性。
 - 重新启动 Claude。
 
+## Windows 脚本会做什么
+
+- 查找 Windows 版 Claude Desktop 安装目录。
+- 复制本仓库现有中文资源，不使用其他语言包项目里的 JSON：
+  - `resources/frontend-zh-CN.json` -> `ion-dist\i18n\zh-CN.json`
+  - `resources/desktop-zh-CN.json` -> `resources\zh-CN.json`
+  - `resources/statsig-zh-CN.json` -> `ion-dist\i18n\statsig\zh-CN.json`
+- 给前端语言白名单加入 `zh-CN`。
+- 写入 Windows 用户配置，将语言设置为 `zh-CN`。
+- 重启 Claude Desktop。
+
 ## 注意
 
 Claude Desktop 更新后可能会覆盖补丁，需要重新运行 `install.command`。
+
+Windows 版更新后也可能被覆盖，需要重新运行 `install-windows.bat`。Windows 版当前只做汉化，不包含 macOS 版的 3P gateway 模型名校验绕过。
 
 3P gateway 模型名校验补丁只解决启动阶段 `inferenceModels` 名称被拒的问题，不保证第三方模型完全兼容 Claude Desktop / Claude Code 的协议与工具调用行为。Claude Desktop 更新后如果内部 bundle 结构变化，脚本会停止并提示补丁失败，而不是猜测修改。
 
