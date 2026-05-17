@@ -20,6 +20,18 @@ body:
         - 其他
     validations:
       required: true
+      
+   - type: dropdown
+    id: isnew
+    attributes:
+      label: 是否使用最新代码
+      description: 没使用最新代码的话先用最新代码试试
+      options:
+        - 是
+        - 否
+        - 其他
+    validations:
+      required: true     
 
   - type: input
     id: claude_version
@@ -50,42 +62,3 @@ body:
       placeholder: 例如：安装完成后 Claude 无法启动，或界面没有切换成中文
     validations:
       required: true
-
-  - type: textarea
-    id: reproduction_steps
-    attributes:
-      label: 复现步骤
-      description: 请按顺序写出你做了什么，方便复现
-      placeholder: |
-        1. 打开...
-        2. 运行...
-        3. 看到...
-    validations:
-      required: true
-
-  - type: textarea
-    id: actual_behavior
-    attributes:
-      label: 实际表现
-      description: 请贴出报错信息、日志或截图说明
-      placeholder: 例如：报错弹窗内容、终端输出、截图等
-    validations:
-      required: true
-
-  - type: textarea
-    id: expected_behavior
-    attributes:
-      label: 期望结果
-      description: 你原本预期应该发生什么
-      placeholder: 例如：Claude 正常启动并切换到中文界面
-    validations:
-      required: false
-
-  - type: textarea
-    id: extra_context
-    attributes:
-      label: 补充信息
-      description: 其他可能有帮助的信息，例如是否刚更新过 Claude、是否改过配置文件等
-      placeholder: 可选
-    validations:
-      required: false
