@@ -790,6 +790,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="Prepare and verify a patched temp app, but do not replace /Applications/Claude.app")
     parser.add_argument("--launch", action="store_true", help="Launch Claude after installation")
     parser.add_argument("--restore", action="store_true", help="Restore the oldest macOS app backup and delete other backups")
+    parser.add_argument("--skip-asar-patch", action="store_true", help="Skip app.asar and binary integrity patches (safe mode)")
     args = parser.parse_args()
 
     try:
@@ -841,8 +842,14 @@ def main() -> int:
     patch_language_whitelist(patched_app, lang_code)
     patch_hardcoded_frontend_strings(patched_app, lang_code)
     patch_language_display_names(patched_app)
-    patch_hardcoded_main_process_menu_labels(patched_app, lang_code)
-    patch_custom3p_model_validation(patched_app)
+    if args.skip_asar_patch:
+        print("Skipping main-process menu label patch (--skip-asar-patch)")
+    else:
+        patch_hardcoded_main_process_menu_labels(patched_app, lang_code)
+    if args.skip_asar_patch:
+        print("Skipping 3P model validation patch (--skip-asar-patch)")
+    else:
+        patch_custom3p_model_validation(patched_app)
     merge_frontend_locale(patched_app, lang_code)
     install_desktop_locale(patched_app, lang_code)
     install_statsig_locale(patched_app, lang_code)

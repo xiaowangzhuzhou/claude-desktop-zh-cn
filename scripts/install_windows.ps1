@@ -1,5 +1,6 @@
 ﻿param(
     [switch]$Interactive,
+    [switch]$SkipAsarPatch,
 
     [Parameter(Position = 0)]
     [ValidateSet("install", "uninstall")]
@@ -25,19 +26,21 @@ function Read-InteractiveSelection {
     Write-Host "[1] 安装简体中文"
     Write-Host "[2] 安装繁体中文（中国台湾）"
     Write-Host "[3] 安装繁体中文（中国香港）"
-    Write-Host "[4] 恢复原样 / 卸载补丁"
+    Write-Host "[4] 安装简体中文（安全模式，跳过 app.asar 补丁）"
+    Write-Host "[5] 恢复原样 / 卸载补丁"
     Write-Host "[Q] 退出"
     Write-Host ""
 
     while ($true) {
-        $selection = (Read-Host "请选择操作 [1/2/3/4/Q]").Trim()
+        $selection = (Read-Host "请选择操作 [1/2/3/4/5/Q]").Trim()
         switch -Regex ($selection) {
-            '^[1]$' { return @{ Action = "install"; Language = "zh-CN" } }
-            '^[2]$' { return @{ Action = "install"; Language = "zh-TW" } }
-            '^[3]$' { return @{ Action = "install"; Language = "zh-HK" } }
-            '^[4]$' { return @{ Action = "uninstall"; Language = "zh-CN" } }
+            '^[1]$' { return @{ Action = "install"; Language = "zh-CN"; SkipAsarPatch = $false } }
+            '^[2]$' { return @{ Action = "install"; Language = "zh-TW"; SkipAsarPatch = $false } }
+            '^[3]$' { return @{ Action = "install"; Language = "zh-HK"; SkipAsarPatch = $false } }
+            '^[4]$' { return @{ Action = "install"; Language = "zh-CN"; SkipAsarPatch = $true } }
+            '^[5]$' { return @{ Action = "uninstall"; Language = "zh-CN"; SkipAsarPatch = $false } }
             '^[Qq]$' { exit 0 }
-            default { Write-Host "请输入 1、2、3、4 或 Q。" -ForegroundColor Yellow }
+            default { Write-Host "请输入 1、2、3、4、5 或 Q。" -ForegroundColor Yellow }
         }
     }
 }
@@ -46,6 +49,9 @@ if ($Interactive) {
     $interactiveSelection = Read-InteractiveSelection
     $Action = $interactiveSelection.Action
     $Language = $interactiveSelection.Language
+    if ($interactiveSelection.SkipAsarPatch) {
+        $SkipAsarPatch = $true
+    }
 }
 
 $LanguageCode = $Language
@@ -1182,10 +1188,22 @@ function Install-WindowsLanguagePack {
     Write-Step "[7/9] 汉化硬编码界面文本"
     Patch-HardcodedFrontendStrings $resourcesPath $LanguageCode
     Patch-LanguageDisplayNames $resourcesPath
-    Patch-HardcodedMainProcessMenuLabels $resourcesPath $LanguageCode
+    if ($SkipAsarPatch) {
+        Write-Host "  skipping main-process menu label patch (app.asar) due to -SkipAsarPatch" -ForegroundColor DarkYellow
+    } else {
+        Patch-HardcodedMainProcessMenuLabels $resourcesPath $LanguageCode
+    }
 
     Write-Step "[8/9] 修复第三方模型名校验"
-    Patch-Custom3PModelValidation $resourcesPath
+    if ($SkipAsarPatch) {
+        Write-Host "  skipping 3P model validation patch (app.asar) due to -SkipAsarPatch" -ForegroundColor DarkYellow
+    } else {
+        Patch-Custom3PModelValidation $resourcesPath
+    }
+
+    if ($SkipAsarPatch) {
+        Write-Host "  skipping Claude.exe asar integrity sync due to -SkipAsarPatch" -ForegroundColor DarkYellow
+    }
 
     Write-Step "[9/9] 写入用户语言配置"
     Set-ClaudeLocale $LanguageCode
