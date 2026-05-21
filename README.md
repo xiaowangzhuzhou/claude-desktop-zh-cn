@@ -146,24 +146,7 @@ chmod +x install-mac.command
 
 ## 卸载 / 恢复
 
-macOS 脚本安装前会在 `/Applications` 下生成备份，名称类似：
-
-```text
-Claude.backup-before-zh-CN-20260424-120000.app
-```
-
-如需恢复，可退出 Claude Desktop 后，将当前 `/Applications/Claude.app` 移走，再把备份 app 改名为 `Claude.app`。
-
-Windows 脚本安装时会把被修改的前端 JS bundle、`app.asar` 和 `Claude.exe` 备份到 Claude 安装目录下的 `resources\.zh-cn-backups`。如需恢复，退出 Claude Desktop 后，右键 `install-windows.bat`，选择以管理员身份运行，并在菜单中选择 `3`（卸载补丁）。
-
-也可以在 PowerShell 中运行：
-
-```powershell
-# 卸载（会移除所有中文资源并恢复为英文）
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_windows.ps1 uninstall
-```
-
-会优先恢复最近一次备份，再删除中文资源并把语言配置改回 `en-US`。
+执行脚本，选择恢复即可。
 
 ## Star History
 
