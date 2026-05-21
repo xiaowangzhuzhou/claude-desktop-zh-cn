@@ -9,7 +9,7 @@ macOS 可双击 `install-mac.command`，Windows 可右键管理员运行 `instal
 
 ## 界面截图
 
-![Claude Desktop 中文界面截图](docs/images/claude-desktop-zh-cn-home.png) ![Claude Desktop 中文设置界面截图](docs/images/claude-desktop-zh-cn-settings.png)
+![Claude Desktop 中文界面截图](docs/images/pinjie.png) 
 
 ## 功能特点
 
