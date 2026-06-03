@@ -580,10 +580,6 @@
     "已下载更新在强制安装前等待的小时数。留空则默认为 72 小时。"
   ],
   [
-    "hours",
-    "小时"
-  ],
-  [
     "<b>{category}</b> needs {count, plural, one {{label}} other {# fields}}",
     "<b>{category}</b> 需要 {count, plural, one {{label}} other {# 个字段}}"
   ],

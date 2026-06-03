@@ -52,6 +52,22 @@ ONLINE_LOCALE_PRELOAD_TARGETS = [
 ONLINE_LOCALE_MARKER = "__claudeZhOnlineLocale"
 ONLINE_LOCALE_MAIN_MARKER = "__claudeZhOnlineLocaleMain"
 ONLINE_TRANSLATION_MAX_SOURCE_LEN = 240
+STRUCTURAL_JS_STRING_REPLACEMENTS = {
+    "hour",
+    "hours",
+    "minute",
+    "minutes",
+    "second",
+    "seconds",
+    "day",
+    "days",
+    "week",
+    "weeks",
+    "month",
+    "months",
+    "year",
+    "years",
+}
 
 
 def log(message: str) -> None:
@@ -218,6 +234,9 @@ def is_plain_ui_text_replacement(source: str) -> bool:
 
 
 def replace_frontend_hardcoded_text(text: str, source: str, target: str) -> tuple[str, int]:
+    if source in STRUCTURAL_JS_STRING_REPLACEMENTS:
+        return text, 0
+
     if not is_plain_ui_text_replacement(source):
         count = text.count(source)
         if count:
