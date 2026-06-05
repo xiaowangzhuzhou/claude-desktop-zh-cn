@@ -2332,23 +2332,75 @@ function Remove-LanguageFiles {
     }
 }
 
-function Stop-ClaudeProcesses {
-    $killed = $false
+function Stop-ClaudeProcessesGracefully {
+    param(
+        [int]$TimeoutSeconds = 10
+    )
+
+    $procs = @()
     foreach ($proc in Get-Process -Name "claude" -ErrorAction SilentlyContinue) {
         try {
             $path = $proc.MainModule.FileName
-            if ($path -and $path -match "WindowsApps\\Claude_") {
-                Write-Host "  正在停止 Claude Desktop (PID $($proc.Id)): $path" -ForegroundColor DarkGray
-                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-                $killed = $true
+            if ($path -and ($path -match "WindowsApps\\Claude_" -or $path -match "AnthropicClaude\\app-")) {
+                $procs += $proc
             }
         } catch {
-            # MainModule inaccessible (permission or 32/64 mismatch) — skip, do NOT kill
+            # MainModule inaccessible (permission or 32/64 mismatch) — skip
         }
     }
-    if ($killed) {
-        Start-Sleep -Seconds 2
-        Write-Host "  已停止 Claude Desktop" -ForegroundColor Green
+
+    if ($procs.Count -eq 0) {
+        return $true
+    }
+
+    # 第一层：使用 taskkill /T 发送 WM_CLOSE 消息，允许 Electron 执行 app.quit() 和数据库 flush
+    foreach ($proc in $procs) {
+        Write-Host "  正在请求 Claude Desktop 优雅退出 (PID $($proc.Id))..." -ForegroundColor DarkGray
+        try {
+            $null = & taskkill /PID $proc.Id /T 2>&1
+        } catch {
+            # taskkill 失败，继续等待超时后强制终止
+        }
+    }
+
+    # 等待进程退出，每秒检查一次，提前跳出
+    $elapsed = 0
+    while ($elapsed -lt $TimeoutSeconds) {
+        Start-Sleep -Seconds 1
+        $elapsed++
+        $stillRunning = @()
+        foreach ($proc in $procs) {
+            if (-not $proc.HasExited) {
+                $stillRunning += $proc
+            }
+        }
+        if ($stillRunning.Count -eq 0) {
+            Write-Host "  Claude Desktop 已优雅退出" -ForegroundColor Green
+            return $true
+        }
+        $procs = $stillRunning
+    }
+
+    # 第二层：超时后才回退到 Stop-Process -Force
+    Write-Host "  优雅退出超时（${TimeoutSeconds}秒），强制终止剩余进程..." -ForegroundColor DarkYellow
+    foreach ($proc in $procs) {
+        if (-not $proc.HasExited) {
+            try {
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            } catch {
+                # 已退出或无法终止
+            }
+        }
+    }
+
+    Start-Sleep -Seconds 1
+    return $false
+}
+
+function Stop-ClaudeProcesses {
+    $killed = Stop-ClaudeProcessesGracefully -TimeoutSeconds 10
+    if (-not $killed) {
+        Write-Host "  已强制停止 Claude Desktop" -ForegroundColor Green
     }
 }
 
@@ -2367,12 +2419,165 @@ function Restart-Claude {
     Write-Host "  [警告] 未找到 Claude.exe，请手动启动 Claude Desktop。" -ForegroundColor DarkYellow
 }
 
+$script:PatchedVersionDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "ClaudeDesktopZhCn" } else { $null }
+$script:WatcherTaskName = "ClaudeDesktopZhCn-UpdateWatcher"
+
+function Get-CurrentClaudeVersion {
+    $packages = @(Get-AppxPackage -Name "Claude" -ErrorAction SilentlyContinue)
+    foreach ($package in $packages) {
+        if ($package.Version) {
+            return [string]$package.Version
+        }
+    }
+
+    $unpackagedBase = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) "AnthropicClaude"
+    if (Test-Path $unpackagedBase) {
+        $latest = Get-ChildItem $unpackagedBase -Directory -Filter "app-*" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        if ($latest -and $latest.Name -match '^app-(.+)$') {
+            return $Matches[1]
+        }
+    }
+    return $null
+}
+
+function Save-PatchedVersion {
+    param(
+        [string]$Version,
+        [string]$InstallPath,
+        [string]$PatchMode,
+        [string]$Language
+    )
+
+    if (-not $script:PatchedVersionDir) { return }
+
+    New-Item -ItemType Directory -Path $script:PatchedVersionDir -Force | Out-Null
+    $info = [pscustomobject]@{
+        version      = $Version
+        installPath  = $InstallPath
+        patchTime    = (Get-Date -Format "o")
+        patchMode    = $PatchMode
+        language     = $Language
+    }
+    $path = Join-Path $script:PatchedVersionDir "patched-version.json"
+    $info | ConvertTo-Json -Depth 5 | Set-Content $path -Encoding UTF8
+    Write-Host "  已记录补丁版本: $Version" -ForegroundColor Green
+}
+
+function Get-PatchedVersion {
+    if (-not $script:PatchedVersionDir) { return $null }
+    $path = Join-Path $script:PatchedVersionDir "patched-version.json"
+    if (-not (Test-Path $path)) { return $null }
+    try {
+        return (Get-Content $path -Raw -ErrorAction Stop | ConvertFrom-Json)
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-PatchNeeded {
+    $recorded = Get-PatchedVersion
+    if (-not $recorded) { return $true }
+
+    $currentVersion = Get-CurrentClaudeVersion
+    if (-not $currentVersion) { return $false }
+
+    return $currentVersion -ne $recorded.version
+}
+
+function Register-UpdateWatcher {
+    if (-not $script:PatchedVersionDir) { return }
+
+    $watcherPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "watch-claude-update.ps1"
+    if (-not (Test-Path $watcherPath)) {
+        Write-Host "  [警告] 未找到 watch-claude-update.ps1，跳过注册更新守护。" -ForegroundColor DarkYellow
+        return
+    }
+
+    try {
+        $existing = Get-ScheduledTask -TaskName $script:WatcherTaskName -ErrorAction SilentlyContinue
+        if ($existing) {
+            Unregister-ScheduledTask -TaskName $script:WatcherTaskName -Confirm:$false -ErrorAction SilentlyContinue
+        }
+
+        $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+        $repetition = $logonTrigger.Repetition
+        $repetition.Interval = "PT30M"
+        $repetition.Duration = "P1D"
+        $repetition.StopAtDurationEnd = $false
+
+        $action = New-ScheduledTaskAction `
+            -Execute "powershell.exe" `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watcherPath`""
+
+        $settings = New-ScheduledTaskSettingsSet `
+            -AllowStartIfOnBatteries `
+            -DontStopIfGoingOnBatteries `
+            -StartWhenAvailable `
+            -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+
+        Register-ScheduledTask `
+            -TaskName $script:WatcherTaskName `
+            -Action $action `
+            -Trigger $logonTrigger `
+            -Settings $settings `
+            -Description "Claude Desktop 中文补丁更新守护 — 自动检测 Claude 更新并重新应用补丁" `
+            -RunLevel Limited `
+            -Force | Out-Null
+
+        Write-Host "  已注册计划任务: $($script:WatcherTaskName)" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "  [警告] 注册计划任务失败: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+}
+
+function Unregister-UpdateWatcher {
+    try {
+        $existing = Get-ScheduledTask -TaskName $script:WatcherTaskName -ErrorAction SilentlyContinue
+        if ($existing) {
+            Unregister-ScheduledTask -TaskName $script:WatcherTaskName -Confirm:$false -ErrorAction SilentlyContinue
+            Write-Host "  已移除计划任务: $($script:WatcherTaskName)" -ForegroundColor Green
+        }
+    }
+    catch {
+        Write-Host "  [警告] 移除计划任务失败: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+}
+
+function Invoke-ReapplyPatch {
+    param(
+        [string]$PatchMode,
+        [string]$Language
+    )
+
+    $scriptPath = $MyInvocation.MyCommand.Path
+    if (-not $scriptPath) {
+        $scriptPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "install_windows.ps1"
+    }
+
+    $args = @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $scriptPath,
+        "-PatchMode", $PatchMode,
+        "-Language", $Language,
+        "-Action", "install"
+    )
+
+    $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $args `
+        -Wait -PassThru -NoNewWindow -RedirectStandardOutput "$env:TEMP\claude-zh-reapply-stdout.log" `
+        -RedirectStandardError "$env:TEMP\claude-zh-reapply-stderr.log"
+
+    return $proc.ExitCode -eq 0
+}
+
 function Install-WindowsLanguagePack {
     $label = Get-LanguageLabel $LanguageCode
     Write-Host "=== Claude Desktop Windows $label 补丁 ===" -ForegroundColor Cyan
 
     try {
-        Write-Step "[1/9] 检查安装模式"
+        Write-Step "[1/11] 检查安装模式"
         if ($PatchMode -eq "safe") {
             Write-Host "  Cowork 兼容模式：无需第三方 API 配置检查。" -ForegroundColor Green
         } elseif ($PatchMode -eq "official") {
@@ -2381,13 +2586,13 @@ function Install-WindowsLanguagePack {
             Write-Host "  第三方 API 登录模式：无需第三方 API 配置检查。" -ForegroundColor Green
         }
 
-        Write-Step "[2/9] 检查语言资源"
+        Write-Step "[2/11] 检查语言资源"
         $pack = Get-LanguageResources $LanguageCode
 
         Write-Step "关闭 Claude Desktop"
         Stop-ClaudeProcesses
 
-        Write-Step "[3/9] 查找 Claude Desktop"
+        Write-Step "[3/11] 查找 Claude Desktop"
         $paths = Get-ClaudeResourcesPath
         $claudePath = $paths["App"]
         $resourcesPath = $paths["Resources"]
@@ -2395,17 +2600,17 @@ function Install-WindowsLanguagePack {
         Write-Host "  app: $claudePath" -ForegroundColor Green
         Write-Host "  resources: $resourcesPath" -ForegroundColor Green
 
-        Write-Step "[4/9] 准备写入权限"
+        Write-Step "[4/11] 准备写入权限"
         Enable-WriteAccess $resourcesPath
         Remove-LegacyAppxForkArtifacts
 
-        Write-Step "[5/9] 写入 $label 资源"
+        Write-Step "[5/11] 写入 $label 资源"
         Install-LanguageFiles $resourcesPath $pack $LanguageCode
 
-        Write-Step "[6/9] 注册中文语言"
+        Write-Step "[6/11] 注册中文语言"
         Register-Language $resourcesPath $LanguageCode
 
-        Write-Step "[7/9] 汉化硬编码界面文本"
+        Write-Step "[7/11] 汉化硬编码界面文本"
         Patch-HardcodedFrontendStrings $resourcesPath $LanguageCode
         Patch-LanguageDisplayNames $resourcesPath
         if (Test-OnlineAccountPatchEnabled) {
@@ -2417,7 +2622,7 @@ function Install-WindowsLanguagePack {
             Write-Host "  skipping main-process menu label patch (app.asar) due to patch mode: $PatchMode" -ForegroundColor DarkYellow
         }
 
-        Write-Step "[8/9] 修复第三方模型名校验"
+        Write-Step "[8/11] 修复第三方模型名校验"
         if (Test-Custom3PPatchEnabled) {
             Patch-Custom3PModelValidation $resourcesPath
             Patch-CoworkModernInstallerCheck $resourcesPath
@@ -2429,8 +2634,20 @@ function Install-WindowsLanguagePack {
             Write-Host "  skipping Claude.exe asar integrity sync due to patch mode: $PatchMode" -ForegroundColor DarkYellow
         }
 
-        Write-Step "[9/9] 写入用户语言配置"
+        Write-Step "[9/11] 写入用户语言配置"
         Set-ClaudeLocale $LanguageCode
+
+        Write-Step "[10/11] 记录补丁版本"
+        $currentVersion = Get-CurrentClaudeVersion
+        if ($currentVersion) {
+            Save-PatchedVersion -Version $currentVersion -InstallPath $claudePath -PatchMode $PatchMode -Language $LanguageCode
+        } else {
+            Write-Host "  [警告] 无法获取 Claude 版本号，跳过版本记录。" -ForegroundColor DarkYellow
+        }
+
+        Write-Step "[11/11] 注册更新守护"
+        Register-UpdateWatcher
+
         Write-Step "重启 Claude Desktop"
         Restart-Claude $claudePath
 
@@ -2463,17 +2680,27 @@ function Uninstall-WindowsLanguagePack {
     Stop-ClaudeProcesses
     Remove-LegacyAppxForkArtifacts
 
-    Write-Step "[1/4] 恢复前端 bundle 和 app.asar"
+    Write-Step "[1/6] 移除更新守护"
+    Unregister-UpdateWatcher
+    if ($script:PatchedVersionDir) {
+        $versionFile = Join-Path $script:PatchedVersionDir "patched-version.json"
+        if (Test-Path $versionFile) {
+            Remove-Item $versionFile -Force -ErrorAction SilentlyContinue
+            Write-Host "  已删除补丁版本记录" -ForegroundColor Green
+        }
+    }
+
+    Write-Step "[2/6] 恢复前端 bundle 和 app.asar"
     Restore-LatestBackup $resourcesPath
     Sync-ClaudeExeAsarIntegrity $resourcesPath
 
-    Write-Step "[2/4] 删除中文资源"
+    Write-Step "[3/6] 删除中文资源"
     Remove-LanguageFiles $resourcesPath
 
-    Write-Step "[3/4] 移除 zh-CN 语言注册"
+    Write-Step "[4/6] 移除 zh-CN 语言注册"
     Unregister-Language $resourcesPath
 
-    Write-Step "[4/4] 恢复用户语言配置"
+    Write-Step "[5/6] 恢复用户语言配置"
     Set-ClaudeLocale "en-US"
 
     Write-Host ""
