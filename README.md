@@ -64,16 +64,15 @@ macOS 可双击 `install-mac.command`，Windows 可右键管理员运行 `instal
 3. 右键 `install-windows.bat`，选择以管理员身份运行。
 4. 先选择安装模式：
    - `1` 安装中文补丁（Cowork 兼容模式，跳过 `app.asar` 补丁；第三方模型请用网关或 ccswitch 别名映射）
-   - `2` 安装中文补丁（官方账号登录模式：仅启用 Claude.ai 登录 / 在线页面汉化，不修改第三方模型名校验）
-   - `3` 安装中文补丁（第三方 API 实验模式：包含模式 2，并去除 3P 模型名限制；Cowork 沙箱/截图工作区可能不可用）
-   - `4` 恢复原样 / 卸载补丁
-   - `5` 自动更新设置（`y` 开启自动更新，`n` 停止自动更新）
-   - `6` 同步 CC Switch skills（`y` 开启同步，`n` 删除同步）
+   - `2` 安装中文补丁（官方账号登录模式：Cowork 沙箱/工作区不可用）
+   - `3` 恢复原样 / 卸载补丁
+   - `4` 自动更新设置（`y` 开启自动更新，`n` 停止自动更新）
+   - `5` 同步 CC Switch skills（`y` 开启同步，`n` 删除同步）
 5. 安装时再选择语言：
    - `1` 简体中文
    - `2` 繁体中文（中国台湾）
    - `3` 繁体中文（中国香港）
-6. 脚本会备份当前 Claude Desktop 资源，写入本仓库 `resources` 目录里的中文 JSON，补齐硬编码界面文本，并重启 Claude Desktop。选择模式 1 时会跳过 `app.asar` 补丁，更适合需要 Cowork/截图工作区的场景。选择模式 2 或 3 时会直接修改当前 Claude 的 `app.asar`，卸载时从备份恢复。
+6. 脚本会备份当前 Claude Desktop 资源，写入本仓库 `resources` 目录里的中文 JSON，补齐硬编码界面文本，并重启 Claude Desktop。选择模式 1 时会跳过 `app.asar` 补丁，更适合需要 Cowork/截图工作区的场景。选择模式 2 时会直接修改当前 Claude 的 `app.asar`，卸载时从备份恢复。
 7. 如果没有自动切换，打开左下角账号菜单，选择 `Language` -> 对应的中文选项。
 
 
@@ -117,12 +116,11 @@ macOS 可双击 `install-mac.command`，Windows 可右键管理员运行 `instal
   - `resources/statsig-zh-CN.json` / `statsig-zh-TW.json` / `statsig-zh-HK.json` -> `ion-dist\i18n\statsig\` 对应语言代码 `.json`
 - 给前端语言白名单加入当前选择的中文变体。
 - 汉化前端 bundle 中未走 i18n JSON 的硬编码界面文本，例如侧边栏入口、配置页标签和模型选择项。
-- 官方账号登录模式和第三方 API 实验模式会在在线账号登录 / 聊天页面注入显示层 DOM 翻译，覆盖聊天、项目、Artifacts 等远程页面；Cowork 兼容模式会跳过此项，因为它需要修改 `app.asar`。
-- 第三方 API 实验模式会对 unpackaged 版本的 `resources\app.asar` 做等长补丁，关闭 3P gateway 启动阶段的 `inferenceModels` Anthropic 名称校验，并同步更新 asar 内部文件完整性信息和 `Claude.exe` 内嵌的 asar header hash。
-- Windows 的模式 2 和 3 会直接改写当前 Claude 的 `app.asar` 并同步改写 `Claude.exe` 内嵌完整性哈希，导致 Authenticode 签名 `HashMismatch`；Cowork VM 服务可能拒绝客户端并报 `RPC pipe closed`。如果需要 Cowork 沙箱/截图工作区，请使用模式 1，并通过网关/ccswitch 模型别名映射解决第三方模型名校验。
+- 官方账号登录模式会在在线账号登录 / 聊天页面注入显示层 DOM 翻译，覆盖聊天、项目、Artifacts 等远程页面；Cowork 兼容模式会跳过此项，因为它需要修改 `app.asar`。
+- Windows 的模式 2 会直接改写当前 Claude 的 `app.asar` 并同步改写 `Claude.exe` 内嵌完整性哈希，导致 Authenticode 签名 `HashMismatch`；Cowork VM 服务可能拒绝客户端并报 `RPC pipe closed`。如果需要 Cowork 沙箱/截图工作区，请使用模式 1，并通过网关/ccswitch 模型别名映射解决第三方模型名校验。
 - 写入 Windows 用户配置，将语言设置为所选语言代码（`zh-CN`、`zh-TW` 或 `zh-HK`）。
-- 可选菜单项 `5` 用 `y/n` 控制 Claude-3p 自动更新：`y` 开启自动更新，`n` 停止自动更新。
-- 可选菜单项 `6` 用 `y/n` 控制 CC Switch skills 同步：`y` 会把 `%USERPROFILE%\.cc-switch\skills` 中缺失的 skill 以软链接加入 Claude Desktop 的本地 skills 目录，并把 `SKILL.md` frontmatter 里的 `name` 和 `description` 写入对应 `manifest.json`；`n` 只删除之前同步产生、且指向 CC Switch skills 目录内的软链接和对应 manifest 记录。脚本会从当前用户的 AppData 动态扫描 Claude-3p skills plugin，不写死 session UUID，不覆盖同名 skill，也不删除 CC Switch 源目录。
+- 可选菜单项 `4` 用 `y/n` 控制 Claude-3p 自动更新：`y` 开启自动更新，`n` 停止自动更新。
+- 可选菜单项 `5` 用 `y/n` 控制 CC Switch skills 同步：`y` 会把 `%USERPROFILE%\.cc-switch\skills` 中缺失的 skill 以软链接加入 Claude Desktop 的本地 skills 目录，并把 `SKILL.md` frontmatter 里的 `name` 和 `description` 写入对应 `manifest.json`；`n` 只删除之前同步产生、且指向 CC Switch skills 目录内的软链接和对应 manifest 记录。脚本会从当前用户的 AppData 动态扫描 Claude-3p skills plugin，不写死 session UUID，不覆盖同名 skill，也不删除 CC Switch 源目录。
 - 重启 Claude Desktop。
 
 ## 卸载 / 恢复
