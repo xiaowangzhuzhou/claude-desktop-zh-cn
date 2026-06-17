@@ -1740,6 +1740,11 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="Prepare and verify a patched temp app, but do not replace /Applications/Claude.app")
     parser.add_argument("--launch", action="store_true", help="Launch Claude after installation")
     parser.add_argument("--restore", action="store_true", help="Restore the oldest macOS app backup and delete other backups")
+    parser.add_argument(
+        "--restore-if-backup-exists",
+        action="store_true",
+        help="Restore the oldest macOS app backup if one exists, otherwise continue without error",
+    )
     parser.add_argument("--skip-asar-patch", action="store_true", help="Skip app.asar and binary integrity patches (safe mode)")
     parser.add_argument(
         "--set-auto-updates",
@@ -1808,6 +1813,20 @@ def main() -> int:
             if args.launch:
                 run(["open", "-a", str(args.app)], check=False)
         print("Done. Claude Desktop has been restored to the oldest backup.")
+        return 0
+
+    if args.restore_if_backup_exists:
+        if not find_app_backups(args.app):
+            print(f"No Claude backup found in {args.app.parent}: {BACKUP_GLOB}; skipping pre-install restore.")
+            return 0
+        if args.dry_run:
+            print("[dry-run] Claude will not be quit.")
+        else:
+            quit_claude()
+        restored = restore_oldest_backup(args.app, args.dry_run)
+        if not args.dry_run:
+            print(f"Restored from backup before install: {restored}")
+        print("Done. Existing Chinese patch has been cleared before install.")
         return 0
 
     lang_code = args.lang

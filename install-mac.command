@@ -95,6 +95,23 @@ if [ "$ACTION" = "uninstall" ]; then
   ACTION="restore"
 fi
 
+DRY_RUN=0
+for arg in "$@"; do
+  if [ "$arg" = "--dry-run" ]; then
+    DRY_RUN=1
+  fi
+done
+
+if [ "$ACTION" = "install" ]; then
+  echo "安装前清理旧中文补丁..."
+  if [ "$(id -u)" -ne 0 ] && [ "$DRY_RUN" -eq 0 ]; then
+    sudo "$PYTHON" "$PATCHER" --user-home "$HOME" --restore-if-backup-exists "$@"
+  else
+    "$PYTHON" "$PATCHER" --user-home "$HOME" --restore-if-backup-exists "$@"
+  fi
+  echo
+fi
+
 # Language selection
 if [ "$ACTION" = "restore" ] || [ "$ACTION" = "disable-updates" ] || [ "$ACTION" = "enable-updates" ] || [ "$ACTION" = "sync-skills" ] || [ "$ACTION" = "unsync-skills" ]; then
   LANG_CODE=""
@@ -132,11 +149,9 @@ NEEDS_SUDO=1
 if [ "$ACTION" = "disable-updates" ] || [ "$ACTION" = "enable-updates" ] || [ "$ACTION" = "sync-skills" ] || [ "$ACTION" = "unsync-skills" ]; then
   NEEDS_SUDO=0
 fi
-for arg in "$@"; do
-  if [ "$arg" = "--dry-run" ]; then
-    NEEDS_SUDO=0
-  fi
-done
+if [ "$DRY_RUN" -eq 1 ]; then
+  NEEDS_SUDO=0
+fi
 
 if [ "$(id -u)" -ne 0 ] && [ "$NEEDS_SUDO" -eq 1 ]; then
   echo "需要管理员权限来替换 /Applications/Claude.app。"

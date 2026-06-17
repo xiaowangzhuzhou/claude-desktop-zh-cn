@@ -27,6 +27,7 @@ $script:DetectedUnpackagedClaudePaths = @()
 $script:DetectedMultipleClaudeInstalls = $false
 $script:InstallLogPath = $null
 $script:InstallTranscriptStarted = $false
+$script:PreInstallCleanupDone = $false
 
 function Start-InstallLog {
     try {
@@ -158,6 +159,8 @@ function Read-InteractiveSelection {
     }
 
     Write-Host ""
+    Invoke-PreInstallCleanup
+    Write-Host ""
     Write-Host "请选择要安装的语言："
     Write-Host "[1] 简体中文"
     Write-Host "[2] 繁体中文（中国台湾）"
@@ -176,19 +179,6 @@ function Read-InteractiveSelection {
         }
     }
 }
-
-if ($Interactive) {
-    $interactiveSelection = Read-InteractiveSelection
-    $Action = $interactiveSelection.Action
-    $Language = $interactiveSelection.Language
-    $PatchMode = $interactiveSelection.PatchMode
-}
-
-if ($SkipAsarPatch) {
-    $PatchMode = "safe"
-}
-
-$LanguageCode = $Language
 
 function Test-OnlineAccountPatchEnabled {
     return $PatchMode -eq "official"
@@ -2673,9 +2663,58 @@ function Uninstall-WindowsLanguagePack {
     Write-Host "卸载完成。请重启 Claude Desktop 使更改生效。" -ForegroundColor Green
 }
 
+function Invoke-PreInstallCleanup {
+    if ($script:PreInstallCleanupDone) {
+        return
+    }
+    $script:PreInstallCleanupDone = $true
+
+    Write-Host "=== 安装前清理旧中文补丁 ===" -ForegroundColor Cyan
+
+    $oldSkipAsarPatch = $SkipAsarPatch
+    $SkipAsarPatch = $true
+    try {
+        $paths = Get-ClaudeResourcesPath
+    }
+    finally {
+        $SkipAsarPatch = $oldSkipAsarPatch
+    }
+
+    $resourcesPath = $paths["Resources"]
+    $backupRoot = Get-BackupRoot $resourcesPath
+    $backup = $null
+    if (Test-Path $backupRoot) {
+        $backup = Get-ChildItem $backupRoot -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name |
+            Select-Object -First 1
+    }
+    if (-not $backup) {
+        Write-Host "  未找到旧中文补丁备份，跳过预卸载。" -ForegroundColor DarkYellow
+        return
+    }
+
+    Uninstall-WindowsLanguagePack
+}
+
+if ($Interactive) {
+    $interactiveSelection = Read-InteractiveSelection
+    $Action = $interactiveSelection.Action
+    $Language = $interactiveSelection.Language
+    $PatchMode = $interactiveSelection.PatchMode
+}
+
+if ($SkipAsarPatch) {
+    $PatchMode = "safe"
+}
+
+$LanguageCode = $Language
+
 try {
     switch ($Action) {
-        "install" { Install-WindowsLanguagePack }
+        "install" {
+            Invoke-PreInstallCleanup
+            Install-WindowsLanguagePack
+        }
         "uninstall" { Uninstall-WindowsLanguagePack }
         "disable-updates" { Set-ThirdPartyAutoUpdates $false }
         "enable-updates" { Set-ThirdPartyAutoUpdates $true }

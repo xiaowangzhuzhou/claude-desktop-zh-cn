@@ -48,10 +48,11 @@ macOS 可双击 `install-mac.command`，Windows 可右键管理员运行 `instal
 1. 退出 Claude Desktop。
 2. 下载或克隆本项目。
 3. 双击 `install-mac.command`，选择安装中文补丁、安全模式安装或恢复原样 / 卸载补丁。
-4. 安装时选择要安装的语言（1=简体中文，2=繁体中文（中国台湾），3=繁体中文（中国香港））。安全模式同样支持三种中文，并跳过结构性 `app.asar` 补丁；仅保留等长菜单汉化补丁。
-5. 按提示输入 Mac 登录密码。
-6. Claude 会自动重新打开。
-7. 如果没有自动切换，打开左下角账号菜单，选择 `Language` -> 对应的中文选项。
+4. 选择安装中文补丁时，脚本会先尝试恢复旧备份来清理已有汉化；如果没有旧备份，会提示跳过并继续。
+5. 安装时选择要安装的语言（1=简体中文，2=繁体中文（中国台湾），3=繁体中文（中国香港））。安全模式同样支持三种中文，并跳过结构性 `app.asar` 补丁；仅保留等长菜单汉化补丁。
+6. 按提示输入 Mac 登录密码。
+7. Claude 会自动重新打开。
+8. 如果没有自动切换，打开左下角账号菜单，选择 `Language` -> 对应的中文选项。
 
 如果需要调整自动更新，可再次运行 `install-mac.command`，选择 `4`，再输入 `y` 禁止自动更新，或输入 `n` 允许自动更新。
 
@@ -68,12 +69,13 @@ macOS 可双击 `install-mac.command`，Windows 可右键管理员运行 `instal
    - `3` 恢复原样 / 卸载补丁
    - `4` 自动更新设置（`y` 开启自动更新，`n` 停止自动更新）
    - `5` 同步 CC Switch skills（`y` 开启同步，`n` 删除同步）
-5. 安装时再选择语言：
+5. 选择安装中文补丁时，脚本会先尝试从旧备份恢复来清理已有汉化；如果没有旧备份，会提示跳过并继续。
+6. 安装时再选择语言：
    - `1` 简体中文
    - `2` 繁体中文（中国台湾）
    - `3` 繁体中文（中国香港）
-6. 脚本会备份当前 Claude Desktop 资源，写入本仓库 `resources` 目录里的中文 JSON，补齐硬编码界面文本，并重启 Claude Desktop。选择模式 1 时会跳过 `app.asar` 补丁，更适合需要 Cowork/截图工作区的场景。选择模式 2 时会直接修改当前 Claude 的 `app.asar`，卸载时从备份恢复。
-7. 如果没有自动切换，打开左下角账号菜单，选择 `Language` -> 对应的中文选项。
+7. 脚本会备份当前 Claude Desktop 资源，写入本仓库 `resources` 目录里的中文 JSON，补齐硬编码界面文本，并重启 Claude Desktop。选择模式 1 时会跳过 `app.asar` 补丁，更适合需要 Cowork/截图工作区的场景。选择模式 2 时会直接修改当前 Claude 的 `app.asar`，卸载时从备份恢复。
+8. 如果没有自动切换，打开左下角账号菜单，选择 `Language` -> 对应的中文选项。
 
 
 ## 文件说明
@@ -92,6 +94,7 @@ macOS 可双击 `install-mac.command`，Windows 可右键管理员运行 `instal
 
 - 安装时备份当前 `/Applications/Claude.app` 到同目录，名字类似：
   `Claude.backup-before-zh-CN-20260424-120000.app`
+- 安装前会先尝试恢复已有旧备份，清理上一轮汉化；没有旧备份时跳过并继续安装。
 - 恢复 / 卸载时选择同目录下最早的 `Claude.backup-before-zh-CN-*.app` 恢复为 `/Applications/Claude.app`，并删除其他备份。
 - 复制 Claude.app 到临时目录并打补丁。
 - 给前端语言白名单加入当前选择的中文变体。
@@ -109,6 +112,7 @@ macOS 可双击 `install-mac.command`，Windows 可右键管理员运行 `instal
 ## Windows 脚本会做什么
 
 - 查找 Windows 版 Claude Desktop 安装目录。
+- 安装前会先尝试从 `resources\.zh-cn-backups` 恢复旧备份，清理上一轮汉化；没有旧备份时跳过并继续安装。
 - 修改前备份将被改动的前端 JS bundle、`app.asar` 和 `Claude.exe` 到 `resources\.zh-cn-backups`。
 - 复制本仓库现有中文资源，不使用其他语言包项目里的 JSON：
   - `resources/frontend-zh-CN.json` / `frontend-zh-TW.json` / `frontend-zh-HK.json` -> `ion-dist\i18n\` 对应语言代码 `.json`
