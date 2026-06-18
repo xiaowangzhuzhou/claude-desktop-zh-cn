@@ -10,7 +10,12 @@
 
     [Parameter(Position = 1)]
     [ValidateSet("zh-CN", "zh-TW", "zh-HK")]
-    [string]$Language = "zh-CN"
+    [string]$Language = "zh-CN",
+
+    [string]$OriginalUserSid = "",
+    [string]$OriginalUserProfile = "",
+    [string]$OriginalAppData = "",
+    [string]$OriginalLocalAppData = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,6 +33,11 @@ $script:DetectedMultipleClaudeInstalls = $false
 $script:InstallLogPath = $null
 $script:InstallTranscriptStarted = $false
 $script:PreInstallCleanupDone = $false
+
+if ($OriginalUserSid) { $env:CLAUDE_ZH_ORIGINAL_USER_SID = $OriginalUserSid }
+if ($OriginalUserProfile) { $env:CLAUDE_ZH_ORIGINAL_USER_PROFILE = $OriginalUserProfile }
+if ($OriginalAppData) { $env:CLAUDE_ZH_ORIGINAL_APPDATA = $OriginalAppData }
+if ($OriginalLocalAppData) { $env:CLAUDE_ZH_ORIGINAL_LOCALAPPDATA = $OriginalLocalAppData }
 
 function Start-InstallLog {
     try {
@@ -118,7 +128,6 @@ function Read-InteractiveSelection {
     Write-Host "[1] 安装中文补丁(第三方API登陆模式(例DeepSeek)：（Cowork 沙箱/工作区不可用(看群公告))"
     Write-Host "[2] 安装中文补丁(官方账号登录模式：Cowork 沙箱/工作区不可用(看群公告))"
     Write-Host "[3] 恢复原样 / 卸载补丁"
-    Write-Host "[4] 自动更新设置（y=开启自动更新，n=停止自动更新）"
     Write-Host "[5] 同步 CC Switch skills（y=开启同步，n=删除同步）"
     Write-Host "[Q] 退出"
     Write-Host ""
@@ -132,12 +141,12 @@ function Read-InteractiveSelection {
             '^[2]$' { $patchModeForInstall = "official"; $actionSelected = $true }
             '^[3]$' { return @{ Action = "uninstall"; Language = "zh-CN"; PatchMode = "safe" } }
             '^[4]$' {
-                $updateChoice = (Read-Host "是否开启自动更新？[y=开启自动更新 / n=停止自动更新]").Trim()
+                $updateChoice = (Read-Host "是否禁止自动更新？[y=禁止 / n=允许]").Trim()
                 switch -Regex ($updateChoice) {
-                    '^[Yy]$' { return @{ Action = "enable-updates"; Language = "zh-CN"; PatchMode = "safe" } }
-                    '^[Nn]$' { return @{ Action = "disable-updates"; Language = "zh-CN"; PatchMode = "safe" } }
+                    '^[Yy]$' { return @{ Action = "disable-updates"; Language = "zh-CN"; PatchMode = "safe" } }
+                    '^[Nn]$' { return @{ Action = "enable-updates"; Language = "zh-CN"; PatchMode = "safe" } }
                     default {
-                        Write-Host "无效输入，请输入 y 开启自动更新，或输入 n 停止自动更新。" -ForegroundColor Yellow
+                        Write-Host "无效输入，请输入 y 禁止自动更新，或输入 n 允许自动更新。" -ForegroundColor Yellow
                         continue
                     }
                 }
@@ -1898,24 +1907,47 @@ function Set-ClaudeLocale {
         }
 
         $config | Add-Member -NotePropertyName "locale" -NotePropertyValue $Locale -Force
-        $config | ConvertTo-Json -Depth 20 | Set-Content $configPath -Encoding UTF8
+        Save-JsonNoBom $configPath $config
         Write-Host "  locale=${Locale}: $configPath" -ForegroundColor Green
     }
 }
 
 function Get-ThirdPartyConfigLibraryPaths {
     $paths = @()
+    $appDataRoots = @()
+    $localAppDataRoots = @()
     if ($env:APPDATA) {
-        $paths += Join-Path $env:APPDATA "Claude-3p\configLibrary"
+        $appDataRoots += $env:APPDATA
+    }
+    if ($env:CLAUDE_ZH_ORIGINAL_APPDATA) {
+        $appDataRoots += $env:CLAUDE_ZH_ORIGINAL_APPDATA
+    }
+    if ($env:LOCALAPPDATA) {
+        $localAppDataRoots += $env:LOCALAPPDATA
+    }
+    if ($env:CLAUDE_ZH_ORIGINAL_LOCALAPPDATA) {
+        $localAppDataRoots += $env:CLAUDE_ZH_ORIGINAL_LOCALAPPDATA
+    }
+    if ($env:CLAUDE_ZH_ORIGINAL_USER_PROFILE) {
+        $appDataRoots += Join-Path $env:CLAUDE_ZH_ORIGINAL_USER_PROFILE "AppData\Roaming"
+        $localAppDataRoots += Join-Path $env:CLAUDE_ZH_ORIGINAL_USER_PROFILE "AppData\Local"
     }
 
-    if ($env:LOCALAPPDATA) {
-        $packageRoot = Join-Path $env:LOCALAPPDATA "Packages"
+    foreach ($localAppData in @($localAppDataRoots | Select-Object -Unique)) {
+        $paths += Join-Path $localAppData "Claude-3p\configLibrary"
+    }
+
+    foreach ($localAppData in @($localAppDataRoots | Select-Object -Unique)) {
+        $packageRoot = Join-Path $localAppData "Packages"
         $packageDirs = @(Get-ChildItem (Join-Path $packageRoot "Claude_*") -Directory -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending)
         foreach ($packageDir in $packageDirs) {
             $paths += Join-Path $packageDir.FullName "LocalCache\Roaming\Claude-3p\configLibrary"
         }
+    }
+
+    foreach ($appData in @($appDataRoots | Select-Object -Unique)) {
+        $paths += Join-Path $appData "Claude-3p\configLibrary"
     }
 
     return @($paths | Select-Object -Unique)
@@ -1953,6 +1985,27 @@ function Save-JsonNoBom {
     [System.IO.File]::WriteAllText($Path, $json, $Utf8NoBom)
 }
 
+function Test-ThirdPartyApiConfig {
+    param([object]$Config)
+
+    if ($null -eq $Config) {
+        return $false
+    }
+
+    foreach ($name in @(
+        "inferenceGatewayApiKey",
+        "inferenceGatewayBaseUrl",
+        "inferenceGatewayAuthScheme",
+        "inferenceProvider"
+    )) {
+        if (($Config.PSObject.Properties.Name -contains $name) -and ([string]$Config.$name).Trim()) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 function Add-OrSetJsonProperty {
     param(
         [pscustomobject]$Object,
@@ -1987,60 +2040,51 @@ function Ensure-ConfigLibraryEntry {
     Add-OrSetJsonProperty $Meta "entries" $entries
 }
 
-function Set-ThirdPartyAutoUpdates {
-    param([bool]$Enabled)
-
-    $libraryPaths = @(Get-ThirdPartyConfigLibraryPaths)
-    $existingMetaPaths = @()
-    foreach ($configLibrary in $libraryPaths) {
+function Get-ExistingThirdPartyConfigLibraryPaths {
+    $paths = @()
+    foreach ($configLibrary in @(Get-ThirdPartyConfigLibraryPaths)) {
         $metaPath = Join-Path $configLibrary "_meta.json"
-        if (Test-Path $metaPath -PathType Leaf) {
-            $existingMetaPaths += $configLibrary
+        if (-not (Test-Path $metaPath -PathType Leaf)) {
+            continue
         }
-    }
-
-    if ($existingMetaPaths.Count -gt 0) {
-        $libraryPaths = $existingMetaPaths
-    } else {
-        $existingLibraryPaths = @()
-        foreach ($configLibrary in $libraryPaths) {
-            if (Test-Path $configLibrary -PathType Container) {
-                $existingLibraryPaths += $configLibrary
-            }
-        }
-
-        if ($existingLibraryPaths.Count -gt 0) {
-            $libraryPaths = $existingLibraryPaths
-        } elseif ($env:APPDATA) {
-            $libraryPaths = @(Join-Path $env:APPDATA "Claude-3p\configLibrary")
-        } elseif ($env:LOCALAPPDATA) {
-            $libraryPaths = @(Join-Path $env:LOCALAPPDATA "Claude-3p\configLibrary")
-        } else {
-            Write-Host "  [警告] APPDATA 和 LOCALAPPDATA 均未设置，无法写入 Claude-3p 自动更新配置。" -ForegroundColor DarkYellow
-            return
-        }
-    }
-
-    $updatedCount = 0
-    foreach ($configLibrary in $libraryPaths) {
-        $metaPath = Join-Path $configLibrary "_meta.json"
-        $creatingLibrary = -not (Test-Path $metaPath -PathType Leaf)
 
         $meta = Get-JsonObjectOrBackup $metaPath
         $configId = ""
         if ($meta.PSObject.Properties.Name -contains "appliedId") {
             $configId = ([string]$meta.appliedId).Trim()
         }
-
         if (-not $configId) {
-            $existingConfigs = @(Get-ChildItem $configLibrary -Filter "*.json" -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -ne "_meta.json" } |
-                Sort-Object Name)
-            if ($existingConfigs.Count -gt 0) {
-                $configId = [System.IO.Path]::GetFileNameWithoutExtension($existingConfigs[0].Name)
-            } else {
-                $configId = [guid]::NewGuid().ToString()
+            continue
+        }
+
+        $configPath = Join-Path $configLibrary "$configId.json"
+        if (Test-Path $configPath -PathType Leaf) {
+            $config = Get-JsonObjectOrBackup $configPath
+            if (Test-ThirdPartyApiConfig $config) {
+                $paths += $configLibrary
             }
+        }
+    }
+
+    return @($paths | Select-Object -Unique)
+}
+
+function Set-ThirdPartyConfigAutoUpdates {
+    param([bool]$Enabled)
+
+    $libraryPaths = @(Get-ExistingThirdPartyConfigLibraryPaths)
+    if ($libraryPaths.Count -eq 0) {
+        return $false
+    }
+
+    $updatedCount = 0
+    foreach ($configLibrary in $libraryPaths) {
+        $metaPath = Join-Path $configLibrary "_meta.json"
+
+        $meta = Get-JsonObjectOrBackup $metaPath
+        $configId = ""
+        if ($meta.PSObject.Properties.Name -contains "appliedId") {
+            $configId = ([string]$meta.appliedId).Trim()
         }
 
         $configPath = Join-Path $configLibrary "$configId.json"
@@ -2049,10 +2093,46 @@ function Set-ThirdPartyAutoUpdates {
         Ensure-ConfigLibraryEntry $meta $configId
 
         New-Item -ItemType Directory -Path $configLibrary -Force | Out-Null
-        $config | ConvertTo-Json -Depth 20 | Set-Content $configPath -Encoding UTF8
-        $meta | ConvertTo-Json -Depth 20 | Set-Content $metaPath -Encoding UTF8
+        Save-JsonNoBom $configPath $config
+        Save-JsonNoBom $metaPath $meta
 
         $updatedCount++
+    }
+
+    Write-Host "  已更新 Claude-3p 配置库自动更新设置: $updatedCount 个配置" -ForegroundColor DarkGray
+    return $true
+}
+
+function Get-ClaudePolicyRegistryPath {
+    $sid = [string]$env:CLAUDE_ZH_ORIGINAL_USER_SID
+    if ($sid -and (Test-Path "Registry::HKEY_USERS\$sid")) {
+        return "Registry::HKEY_USERS\$sid\SOFTWARE\Policies\Claude"
+    }
+
+    return "HKCU:\SOFTWARE\Policies\Claude"
+}
+
+function Set-ClaudeManagedAutoUpdates {
+    param([bool]$Enabled)
+
+    $policyPath = Get-ClaudePolicyRegistryPath
+    if ($Enabled) {
+        if (Test-Path $policyPath) {
+            Remove-ItemProperty -Path $policyPath -Name "disableAutoUpdates" -ErrorAction SilentlyContinue
+        }
+        Write-Host "  已移除 Claude Desktop 自动更新禁用策略: $policyPath" -ForegroundColor DarkGray
+    } else {
+        New-Item -Path $policyPath -Force | Out-Null
+        New-ItemProperty -Path $policyPath -Name "disableAutoUpdates" -Value 1 -PropertyType DWord -Force | Out-Null
+        Write-Host "  已写入 Claude Desktop 自动更新禁用策略: $policyPath" -ForegroundColor DarkGray
+    }
+}
+
+function Set-ClaudeAutoUpdates {
+    param([bool]$Enabled)
+
+    if (-not (Set-ThirdPartyConfigAutoUpdates $Enabled)) {
+        Set-ClaudeManagedAutoUpdates $Enabled
     }
 
     if ($Enabled) {
@@ -2716,8 +2796,8 @@ try {
             Install-WindowsLanguagePack
         }
         "uninstall" { Uninstall-WindowsLanguagePack }
-        "disable-updates" { Set-ThirdPartyAutoUpdates $false }
-        "enable-updates" { Set-ThirdPartyAutoUpdates $true }
+        "disable-updates" { Set-ClaudeAutoUpdates $false }
+        "enable-updates" { Set-ClaudeAutoUpdates $true }
         "sync-skills" { Sync-CCSwitchSkills }
         "unsync-skills" { Unsync-CCSwitchSkills }
     }

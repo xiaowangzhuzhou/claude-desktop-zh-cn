@@ -146,7 +146,7 @@ if [ "$ACTION" = "install" ]; then
 fi
 
 NEEDS_SUDO=1
-if [ "$ACTION" = "disable-updates" ] || [ "$ACTION" = "enable-updates" ] || [ "$ACTION" = "sync-skills" ] || [ "$ACTION" = "unsync-skills" ]; then
+if [ "$ACTION" = "sync-skills" ] || [ "$ACTION" = "unsync-skills" ]; then
   NEEDS_SUDO=0
 fi
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -159,6 +159,10 @@ if [ "$(id -u)" -ne 0 ] && [ "$NEEDS_SUDO" -eq 1 ]; then
   echo
   if [ "$ACTION" = "restore" ]; then
     sudo "$PYTHON" "$PATCHER" --user-home "$HOME" --restore --launch "$@"
+  elif [ "$ACTION" = "disable-updates" ]; then
+    sudo "$PYTHON" "$PATCHER" --user-home "$HOME" --set-auto-updates disabled "$@"
+  elif [ "$ACTION" = "enable-updates" ]; then
+    sudo "$PYTHON" "$PATCHER" --user-home "$HOME" --set-auto-updates enabled "$@"
   else
     sudo "$PYTHON" "$PATCHER" --user-home "$HOME" --lang "$LANG_CODE" --launch ${SKIP_ASAR_ARG:+"$SKIP_ASAR_ARG"} "$@"
   fi

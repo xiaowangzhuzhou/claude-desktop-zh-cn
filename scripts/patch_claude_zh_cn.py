@@ -29,7 +29,6 @@ import struct
 import sys
 import tempfile
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +50,7 @@ ONLINE_LOCALE_PRELOAD_TARGETS = [
 ]
 ONLINE_LOCALE_MARKER = "__claudeZhOnlineLocale"
 ONLINE_LOCALE_MAIN_MARKER = "__claudeZhOnlineLocaleMain"
+ONLINE_LOCALE_LOCK_MARKER = "__claudeZhLocaleLock"
 ONLINE_TRANSLATION_MAX_SOURCE_LEN = 240
 STRUCTURAL_JS_STRING_REPLACEMENTS = {
     "hour",
@@ -643,6 +643,44 @@ def strip_online_locale_main_process_patch(text: str) -> tuple[str, bool]:
     return patched, count > 0
 
 
+def strip_online_locale_lock_patch(text: str) -> tuple[str, bool]:
+    pattern = re.compile(
+        r'requestLocaleChange\((?P<arg>[A-Za-z_$][A-Za-z0-9_$]*)\)'
+        r'\{V6r\("(?P<lang>[^"]+)"\)\}/\*'
+        + re.escape(ONLINE_LOCALE_LOCK_MARKER)
+        + r"\*/"
+    )
+
+    def restore(match: re.Match[str]) -> str:
+        arg = match.group("arg")
+        return f"requestLocaleChange({arg}){{V6r({arg})}}"
+
+    patched, count = pattern.subn(restore, text)
+    return patched, count > 0
+
+
+def patch_online_locale_lock(text: str, lang_code: str) -> tuple[str, bool]:
+    pattern = re.compile(
+        r'requestLocaleChange\((?P<arg>[A-Za-z_$][A-Za-z0-9_$]*)\)'
+        r'\{V6r\((?P=arg)\)\}'
+    )
+    matches = list(pattern.finditer(text))
+    if len(matches) > 1:
+        raise SystemExit(
+            "Could not patch DesktopIntl locale persistence: multiple requestLocaleChange handlers found."
+        )
+    if not matches:
+        return text, False
+
+    match = matches[0]
+    arg = match.group("arg")
+    replacement = (
+        f'requestLocaleChange({arg}){{V6r("{lang_code}")}}/*{ONLINE_LOCALE_LOCK_MARKER}*/'
+    )
+    patched = text[: match.start()] + replacement + text[match.end() :]
+    return patched, True
+
+
 def find_main_view_dom_ready_handler(text: str) -> re.Match[str] | None:
     pattern = re.compile(
         r'(?P<web_contents>[A-Za-z_$][A-Za-z0-9_$]*\.webContents)'
@@ -685,6 +723,7 @@ def patch_online_locale_main_process(app: Path, lang_code: str) -> None:
 
     text = data[content_offset:content_end].decode("utf-8")
     text, had_existing = strip_online_locale_main_process_patch(text)
+    text, had_existing_lock = strip_online_locale_lock_patch(text)
     mapping = build_online_translation_map(app, lang_code)
     handler = find_main_view_dom_ready_handler(text)
     if handler is None:
@@ -700,14 +739,24 @@ def patch_online_locale_main_process(app: Path, lang_code: str) -> None:
         handler.group("web_contents"),
         handler.group("body"),
     )
-    if injection in text:
+    patched_text = text[: handler.start()] + injection + text[handler.end() :]
+    patched_text, locale_lock_patched = patch_online_locale_lock(patched_text, lang_code)
+    if not locale_lock_patched:
+        print(
+            "Warning: could not patch DesktopIntl locale persistence; "
+            "Claude may still write locale back to English."
+        )
+
+    if patched_text == data[content_offset:content_end].decode("utf-8"):
         print("Online claude.ai locale main-process patch already applied")
         return
 
-    patched = (text[: handler.start()] + injection + text[handler.end() :]).encode("utf-8")
-    replace_asar_file_content(app, ASAR_PATCH_TARGET, patched)
-    action = "Refreshed" if had_existing else "Patched"
-    print(f"{action} online claude.ai locale main-process hook: {len(mapping)} DOM strings")
+    replace_asar_file_content(app, ASAR_PATCH_TARGET, patched_text.encode("utf-8"))
+    action = "Refreshed" if (had_existing or had_existing_lock) else "Patched"
+    print(
+        f"{action} online claude.ai locale main-process hook: {len(mapping)} DOM strings; "
+        f"locked DesktopIntl locale to {lang_code}"
+    )
 
 
 def _custom3p_validation_removed(content: bytes) -> bool:
@@ -1372,29 +1421,38 @@ def ensure_config_library_entry(meta: dict[str, Any], config_id: str) -> None:
     entries.append({"id": config_id, "name": "Default"})
 
 
-def set_third_party_auto_updates(user_home: Path, enabled: bool, dry_run: bool = False) -> bool:
+def get_existing_third_party_config(user_home: Path, dry_run: bool = False) -> tuple[Path, Path, dict[str, Any]] | None:
     config_library = user_home / "Library/Application Support/Claude-3p/configLibrary"
     meta_path = config_library / "_meta.json"
-    creating_library = not meta_path.exists()
+    if not meta_path.exists():
+        return None
+
     meta = load_json_object_or_backup(meta_path, dry_run=dry_run)
     applied_id = meta.get("appliedId")
     config_id = str(applied_id) if isinstance(applied_id, str) and applied_id.strip() else ""
-
     if not config_id:
-        existing_configs = sorted(
-            path for path in config_library.glob("*.json") if path.name != "_meta.json"
-        )
-        config_id = existing_configs[0].stem if existing_configs else str(uuid.uuid4())
+        return None
 
     config_path = config_library / f"{config_id}.json"
+    if not config_path.exists():
+        return None
+
+    return meta_path, config_path, meta
+
+
+def set_third_party_config_auto_updates(user_home: Path, enabled: bool, dry_run: bool = False) -> bool:
+    existing = get_existing_third_party_config(user_home, dry_run=dry_run)
+    if existing is None:
+        return False
+
+    meta_path, config_path, meta = existing
     config = load_json_object_or_backup(config_path, dry_run=dry_run)
     config["disableAutoUpdates"] = not enabled
-    ensure_config_library_entry(meta, config_id)
+    ensure_config_library_entry(meta, config_path.stem)
 
     state = "允许" if enabled else "禁止"
     if dry_run:
-        action = "create and update" if creating_library else "update"
-        print(f"[dry-run] Would {action} Claude-3p config and {state}自动更新: {config_path}")
+        print(f"[dry-run] Would update Claude-3p config and {state}自动更新: {config_path}")
         return True
 
     save_json(config_path, config)
@@ -1404,6 +1462,64 @@ def set_third_party_auto_updates(user_home: Path, enabled: bool, dry_run: bool =
 
     print("允许更新成功" if enabled else "禁止更新成功")
     return True
+
+
+def managed_preferences_user_name(user_home: Path) -> str:
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user and sudo_user != "root":
+        return sudo_user
+    return user_home.name
+
+
+def set_macos_managed_auto_updates(user_home: Path, enabled: bool, dry_run: bool = False) -> bool:
+    user_name = managed_preferences_user_name(user_home)
+    plist_path = Path("/Library/Managed Preferences") / user_name / "com.anthropic.claudefordesktop.plist"
+    data: dict[str, Any] = {}
+    if plist_path.exists():
+        try:
+            with plist_path.open("rb") as f:
+                loaded = plistlib.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
+            else:
+                raise ValueError("plist root is not a dictionary")
+        except Exception:
+            backup = plist_path.with_suffix(plist_path.suffix + ".bak-invalid")
+            if dry_run:
+                print(f"[dry-run] Existing managed plist is invalid; would back up to {backup}")
+            else:
+                shutil.copy2(plist_path, backup)
+
+    state = "允许" if enabled else "禁止"
+    plist_existed = plist_path.exists()
+    if enabled:
+        data.pop("disableAutoUpdates", None)
+    else:
+        data["disableAutoUpdates"] = True
+
+    if dry_run:
+        action = "remove disableAutoUpdates from" if enabled else "write disableAutoUpdates=true to"
+        print(f"[dry-run] Would {action} Claude Desktop managed policy and {state}自动更新: {plist_path}")
+        return True
+
+    if enabled and not plist_existed:
+        print("允许更新成功")
+        print(f"Claude Desktop managed policy was already absent: {plist_path}")
+        return True
+
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    with plist_path.open("wb") as f:
+        plistlib.dump(data, f, sort_keys=True)
+    os.chmod(plist_path, 0o644)
+    print("允许更新成功" if enabled else "禁止更新成功")
+    print(f"Updated Claude Desktop managed policy: {plist_path}")
+    return True
+
+
+def set_auto_updates(user_home: Path, enabled: bool, dry_run: bool = False) -> bool:
+    if set_third_party_config_auto_updates(user_home, enabled=enabled, dry_run=dry_run):
+        return True
+    return set_macos_managed_auto_updates(user_home, enabled=enabled, dry_run=dry_run)
 
 
 def read_skill_frontmatter(skill_md: Path) -> dict[str, str]:
@@ -1762,7 +1878,7 @@ def main() -> int:
     parser.add_argument(
         "--set-auto-updates",
         choices=["enabled", "disabled"],
-        help="Only update Claude-3p auto-update setting, then exit",
+        help="Only update Claude Desktop auto-update setting, then exit",
     )
     parser.add_argument(
         "--sync-cc-switch-skills",
@@ -1782,7 +1898,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.set_auto_updates:
-        set_third_party_auto_updates(
+        set_auto_updates(
             args.user_home,
             enabled=args.set_auto_updates == "enabled",
             dry_run=args.dry_run,
