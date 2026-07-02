@@ -2509,6 +2509,30 @@ function Set-ClaudeAutoUpdates {
     }
 }
 
+function Start-CoworkVMService {
+    $serviceName = "CoworkVMService"
+    $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    if (-not $service) {
+        Write-Host "  [提示] 未找到 $serviceName 服务，跳过。" -ForegroundColor DarkGray
+        return
+    }
+
+    if ($service.Status -eq "Running") {
+        Write-Host "  $serviceName 已在运行" -ForegroundColor Green
+        return
+    }
+
+    try {
+        Start-Service -Name $serviceName -ErrorAction Stop
+        Start-Sleep -Seconds 2
+        $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+        Write-Host "  $serviceName 已启动，当前状态: $($service.Status)" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "  [警告] 启动 $serviceName 失败: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
 function Repair-CoworkVMService {
     $serviceName = "CoworkVMService"
     $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName"
@@ -3165,6 +3189,9 @@ function Install-WindowsLanguagePack {
 
         Write-Step "重启 Claude Desktop"
         Restart-Claude $claudePath
+
+        Write-Step "启动 CoworkVMService"
+        Start-CoworkVMService
 
         Write-Host ""
         Write-Host "安装完成。如果界面未立即切换，请在 Language 中选择 $label。" -ForegroundColor Green
