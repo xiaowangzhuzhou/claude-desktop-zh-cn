@@ -23,7 +23,7 @@ $ErrorActionPreference = "Stop"
 $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $BaseLanguageList = '["en-US","de-DE","fr-FR","ko-KR","ja-JP","es-419","es-ES","it-IT","hi-IN","pt-BR","id-ID"'
 $LanguageListPattern = [System.Text.RegularExpressions.Regex]::Escape($BaseLanguageList) + '(?:(?:,"zh-CN")|(?:,"zh-TW")|(?:,"zh-HK"))*\]'
-$AsarPatchTarget = ".vite/build/index.js"
+$AsarPatchTargetFallback = ".vite/build/index.js"
 $AsarIntegrityBlockSize = 4 * 1024 * 1024
 $OnlineLocaleMainMarker = "__claudeZhOnlineLocaleMain"
 $MenuRuntimeMarker = "__claudeZhMenuRuntimePatch"
@@ -815,6 +815,60 @@ function Get-AsarFileEntries {
     return $entries
 }
 
+function Add-AsarFilePathEntries {
+    param(
+        [object]$Node,
+        [string]$Prefix,
+        [System.Collections.Generic.List[object]]$Entries
+    )
+
+    $filesProperty = $Node.PSObject.Properties["files"]
+    if (-not $filesProperty) {
+        return
+    }
+
+    foreach ($childProperty in $filesProperty.Value.PSObject.Properties) {
+        $childPath = if ($Prefix) { "$Prefix/$($childProperty.Name)" } else { $childProperty.Name }
+        $child = $childProperty.Value
+        if ($child.PSObject.Properties["files"]) {
+            Add-AsarFilePathEntries $child $childPath $Entries
+        } elseif ($child.PSObject.Properties["offset"] -and $child.PSObject.Properties["size"]) {
+            $Entries.Add([pscustomobject]@{
+                Path = $childPath
+                Entry = $child
+            })
+        }
+    }
+}
+
+function Get-AsarFilePathEntries {
+    param([object]$Header)
+
+    $entries = [System.Collections.Generic.List[object]]::new()
+    Add-AsarFilePathEntries $Header "" $entries
+    return $entries
+}
+
+function Get-AsarEntryContent {
+    param(
+        [byte[]]$Data,
+        [int]$HeaderSize,
+        [object]$Entry,
+        [string]$FilePath
+    )
+
+    $contentOffset = [int64](8 + $HeaderSize + [int64]$Entry.offset)
+    $contentSize = [int64]$Entry.size
+    $contentEnd = $contentOffset + $contentSize
+    if (($contentOffset -lt 0) -or ($contentEnd -gt $Data.Length) -or ($contentSize -gt [int]::MaxValue)) {
+        throw "Unsupported app.asar file bounds for $FilePath."
+    }
+
+    $content = [byte[]]::new([int]$contentSize)
+    [System.Array]::Copy($Data, [int]$contentOffset, $content, 0, [int]$contentSize)
+    return $content
+}
+
 function Set-AsarEntryOffset {
     param(
         [object]$Entry,
@@ -1439,19 +1493,26 @@ function Remove-ExistingOnlineDomTranslationPatch {
 }
 
 function Find-OnlineDomTranslationHook {
-    param([string]$Text)
+    param(
+        [string]$Text,
+        [switch]$Quiet
+    )
 
     $readyNeedle = "main_view_dom_ready"
     $eventAnchor = '.webContents.on("dom-ready",()=>{'
     $handlerEndNeedle = "});"
 
-    Write-Host "  [进度] 正在快速扫描 dom-ready handler..." -ForegroundColor DarkGray
+    if (-not $Quiet) {
+        Write-Host "  [进度] 正在快速扫描 dom-ready handler..." -ForegroundColor DarkGray
+    }
     $searchIndex = 0
     $checked = 0
     while ($true) {
         $anchorIndex = $Text.IndexOf($eventAnchor, $searchIndex, [System.StringComparison]::Ordinal)
         if ($anchorIndex -lt 0) {
-            Write-Host "  [进度] 已扫描 $checked 个 dom-ready handler，未找到 main_view_dom_ready handler，准备尝试 legacy 注入点..." -ForegroundColor DarkGray
+            if (-not $Quiet) {
+                Write-Host "  [进度] 已扫描 $checked 个 dom-ready handler，未找到 main_view_dom_ready handler，准备尝试 legacy 注入点..." -ForegroundColor DarkGray
+            }
             return @{ Success = $false }
         }
         $checked += 1
@@ -1459,7 +1520,9 @@ function Find-OnlineDomTranslationHook {
         $bodyStart = $anchorIndex + $eventAnchor.Length
         $handlerEnd = $Text.IndexOf($handlerEndNeedle, $bodyStart, [System.StringComparison]::Ordinal)
         if ($handlerEnd -lt $bodyStart) {
-            Write-Host "  [进度] 第 $checked 个 dom-ready handler 结束位置异常，继续查找下一个..." -ForegroundColor DarkGray
+            if (-not $Quiet) {
+                Write-Host "  [进度] 第 $checked 个 dom-ready handler 结束位置异常，继续查找下一个..." -ForegroundColor DarkGray
+            }
             $searchIndex = $bodyStart
             continue
         }
@@ -1470,7 +1533,9 @@ function Find-OnlineDomTranslationHook {
             continue
         }
 
-        Write-Host "  [进度] 已找到包含 main_view_dom_ready 的 dom-ready handler，正在识别 webContents 变量..." -ForegroundColor DarkGray
+        if (-not $Quiet) {
+            Write-Host "  [进度] 已找到包含 main_view_dom_ready 的 dom-ready handler，正在识别 webContents 变量..." -ForegroundColor DarkGray
+        }
         $receiverStart = $anchorIndex - 1
         while ($receiverStart -ge 0) {
             $ch = $Text[$receiverStart]
@@ -1482,14 +1547,18 @@ function Find-OnlineDomTranslationHook {
         }
         $receiverStart += 1
         if ($receiverStart -ge $anchorIndex) {
-            Write-Host "  [进度] 无法识别 webContents 变量名，继续查找下一个 handler..." -ForegroundColor DarkGray
+            if (-not $Quiet) {
+                Write-Host "  [进度] 无法识别 webContents 变量名，继续查找下一个 handler..." -ForegroundColor DarkGray
+            }
             $searchIndex = $handlerEnd + $handlerEndNeedle.Length
             continue
         }
 
         $receiver = $Text.Substring($receiverStart, $anchorIndex - $receiverStart)
         $hookLength = ($handlerEnd + $handlerEndNeedle.Length) - $receiverStart
-        Write-Host "  [进度] 在线 DOM 注入点定位完成：handler=$checked, receiver=$receiver。" -ForegroundColor DarkGray
+        if (-not $Quiet) {
+            Write-Host "  [进度] 在线 DOM 注入点定位完成：handler=$checked, receiver=$receiver。" -ForegroundColor DarkGray
+        }
         return @{
             Success = $true
             Index = $receiverStart
@@ -1498,6 +1567,77 @@ function Find-OnlineDomTranslationHook {
             Body = $body
         }
     }
+}
+
+function Resolve-MainProcessAsarTarget {
+    param(
+        [byte[]]$Data,
+        [int]$HeaderSize,
+        [object]$Header
+    )
+
+    $markerMatches = [System.Collections.Generic.List[string]]::new()
+    $hookMatches = [System.Collections.Generic.List[string]]::new()
+    $legacyMatches = [System.Collections.Generic.List[string]]::new()
+    $fallbackExists = $false
+
+    foreach ($item in Get-AsarFilePathEntries $Header) {
+        $filePath = [string]$item.Path
+        if ($filePath -eq $AsarPatchTargetFallback) {
+            $fallbackExists = $true
+        }
+        if ((-not $filePath.StartsWith(".vite/build/", [System.StringComparison]::Ordinal)) -or (-not $filePath.EndsWith(".js", [System.StringComparison]::Ordinal))) {
+            continue
+        }
+
+        $content = Get-AsarEntryContent $Data $HeaderSize $item.Entry $filePath
+        $text = [System.Text.Encoding]::UTF8.GetString($content)
+        if ($text.Contains($OnlineLocaleMainMarker)) {
+            $markerMatches.Add($filePath)
+            continue
+        }
+        if ($text.Contains("main_view_dom_ready") -and $text.Contains('.webContents.on("dom-ready",()=>{')) {
+            $hookMatch = Find-OnlineDomTranslationHook $text -Quiet
+            if ($hookMatch["Success"]) {
+                $hookMatches.Add($filePath)
+                continue
+            }
+        }
+        if ($text.Contains('s.webContents.on("dom-ready",()=>{DIA()});')) {
+            $legacyMatches.Add($filePath)
+        }
+    }
+
+    if ($markerMatches.Count -eq 1) {
+        Write-Host "  selected main-process ASAR bundle: $($markerMatches[0]) (existing online patch)" -ForegroundColor DarkGray
+        return $markerMatches[0]
+    }
+    if ($markerMatches.Count -gt 1) {
+        throw "Could not select main-process app.asar bundle: multiple existing online patch markers found: $($markerMatches -join ', ')"
+    }
+
+    if ($hookMatches.Count -eq 1) {
+        Write-Host "  selected main-process ASAR bundle: $($hookMatches[0])" -ForegroundColor DarkGray
+        return $hookMatches[0]
+    }
+    if ($hookMatches.Count -gt 1) {
+        throw "Could not select main-process app.asar bundle: multiple main_view_dom_ready handlers found: $($hookMatches -join ', ')"
+    }
+
+    if ($legacyMatches.Count -eq 1) {
+        Write-Host "  selected legacy main-process ASAR bundle: $($legacyMatches[0])" -ForegroundColor DarkGray
+        return $legacyMatches[0]
+    }
+    if ($legacyMatches.Count -gt 1) {
+        throw "Could not select main-process app.asar bundle: multiple legacy dom-ready handlers found: $($legacyMatches -join ', ')"
+    }
+
+    if ($fallbackExists) {
+        Write-Host "  [警告] 未动态定位到 main-process bundle，回退到旧版目标：$AsarPatchTargetFallback" -ForegroundColor DarkYellow
+        return $AsarPatchTargetFallback
+    }
+
+    throw "Could not locate Claude's main-process app.asar bundle."
 }
 
 function Patch-OnlineDomTranslation {
@@ -1516,16 +1656,17 @@ function Patch-OnlineDomTranslation {
     $data = [System.IO.File]::ReadAllBytes($asarPath)
     Write-Host "  [进度] app.asar 读取完成，正在解析 asar 头..." -ForegroundColor DarkGray
     $parsed = Read-AsarHeader $data $asarPath
-    Write-Host "  [进度] asar 头解析完成，正在提取 main-process bundle..." -ForegroundColor DarkGray
+    Write-Host "  [进度] asar 头解析完成，正在定位 main-process bundle..." -ForegroundColor DarkGray
     $headerSize = $parsed["HeaderSize"]
     $header = $parsed["Header"]
-    $entry = Get-AsarFileEntry $header $AsarPatchTarget
+    $asarTarget = Resolve-MainProcessAsarTarget $data $headerSize $header
+    $entry = Get-AsarFileEntry $header $asarTarget
 
     $contentOffset = [int64](8 + $headerSize + [int64]$entry.offset)
     $contentSize = [int64]$entry.size
     $contentEnd = $contentOffset + $contentSize
     if (($contentOffset -lt 0) -or ($contentEnd -gt $data.Length)) {
-        throw "Unsupported app.asar file bounds for $AsarPatchTarget."
+        throw "Unsupported app.asar file bounds for $asarTarget."
     }
 
     $content = [byte[]]::new([int]$contentSize)
@@ -1567,7 +1708,7 @@ function Patch-OnlineDomTranslation {
         $hookLength = [int]$hookMatch["Length"]
         $patched = $text.Substring(0, $hookIndex) + $injection + $text.Substring($hookIndex + $hookLength)
         $patchedContent = [System.Text.Encoding]::UTF8.GetBytes($patched)
-        [void](Replace-AsarFileContent $ResourcesPath $AsarPatchTarget $patchedContent)
+        [void](Replace-AsarFileContent $ResourcesPath $asarTarget $patchedContent)
         $action = if ($hadExisting) { "refreshed" } else { "patched" }
         Write-Host "  $action online claude.ai DOM translation: $($mapping.Count) strings" -ForegroundColor Green
         return
@@ -1589,7 +1730,7 @@ function Patch-OnlineDomTranslation {
     Write-Host "  injecting legacy online DOM translation hook" -ForegroundColor DarkGray
     $patched = $text.Substring(0, $anchorIndex) + $injection + $text.Substring($anchorIndex + $legacyAnchor.Length)
     $patchedContent = [System.Text.Encoding]::UTF8.GetBytes($patched)
-    [void](Replace-AsarFileContent $ResourcesPath $AsarPatchTarget $patchedContent)
+    [void](Replace-AsarFileContent $ResourcesPath $asarTarget $patchedContent)
     $action = if ($hadExisting) { "refreshed" } else { "patched" }
     Write-Host "  $action online claude.ai DOM translation: $($mapping.Count) strings" -ForegroundColor Green
 }
@@ -2079,17 +2220,9 @@ function Patch-HardcodedMainProcessMenuLabels {
     $parsed = Read-AsarHeader $data $asarPath
     $headerSize = $parsed["HeaderSize"]
     $header = $parsed["Header"]
-    $entry = Get-AsarFileEntry $header $AsarPatchTarget
-
-    $contentOffset = [int64](8 + $headerSize + [int64]$entry.offset)
-    $contentSize = [int64]$entry.size
-    $contentEnd = $contentOffset + $contentSize
-    if (($contentOffset -lt 0) -or ($contentEnd -gt $data.Length)) {
-        throw "Unsupported app.asar file bounds for $AsarPatchTarget."
-    }
-
-    $content = [byte[]]::new([int]$contentSize)
-    [System.Array]::Copy($data, [int]$contentOffset, $content, 0, [int]$contentSize)
+    $asarTarget = Resolve-MainProcessAsarTarget $data $headerSize $header
+    $entry = Get-AsarFileEntry $header $asarTarget
+    $content = Get-AsarEntryContent $data $headerSize $entry $asarTarget
     $text = [System.Text.Encoding]::UTF8.GetString($content)
     $patched = $text
     $count = 0
@@ -2231,7 +2364,7 @@ function Patch-HardcodedMainProcessMenuLabels {
     }
 
     $patchedContent = [System.Text.Encoding]::UTF8.GetBytes($patched)
-    Replace-AsarFileContent $ResourcesPath $AsarPatchTarget $patchedContent | Out-Null
+    Replace-AsarFileContent $ResourcesPath $asarTarget $patchedContent | Out-Null
     if ($repairCount -gt 0) {
         Write-Host "  repaired unsafe short main-process menu replacements: $repairCount occurrences" -ForegroundColor Yellow
     }
@@ -2301,16 +2434,9 @@ function Patch-ModelPickerStrings {
     $parsed = Read-AsarHeader $data $asarPath
     $headerSize = $parsed["HeaderSize"]
     $header = $parsed["Header"]
-    $entry = Get-AsarFileEntry $header $AsarPatchTarget
-    $contentOffset = [int64](8 + $headerSize + [int64]$entry.offset)
-    $contentSize = [int64]$entry.size
-    $contentEnd = $contentOffset + $contentSize
-    if (($contentOffset -lt 0) -or ($contentEnd -gt $data.Length)) {
-        throw "Unsupported app.asar file bounds for $AsarPatchTarget."
-    }
-
-    $contentBytes = [byte[]]::new([int]$contentSize)
-    [System.Array]::Copy($data, [int]$contentOffset, $contentBytes, 0, [int]$contentSize)
+    $asarTarget = Resolve-MainProcessAsarTarget $data $headerSize $header
+    $entry = Get-AsarFileEntry $header $asarTarget
+    $contentBytes = Get-AsarEntryContent $data $headerSize $entry $asarTarget
     $text = [System.Text.Encoding]::UTF8.GetString($contentBytes)
     $patched = $text
     $count = 0
@@ -2330,7 +2456,7 @@ function Patch-ModelPickerStrings {
         return
     }
 
-    [void](Replace-AsarFileContent $ResourcesPath $AsarPatchTarget ([System.Text.Encoding]::UTF8.GetBytes($patched)))
+    [void](Replace-AsarFileContent $ResourcesPath $asarTarget ([System.Text.Encoding]::UTF8.GetBytes($patched)))
     Write-Host "  patched hardcoded model picker strings in app.asar: $count replacements" -ForegroundColor Green
 }
 
