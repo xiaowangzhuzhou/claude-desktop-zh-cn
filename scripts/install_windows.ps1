@@ -1750,13 +1750,18 @@ function Patch-HardcodedFrontendStrings {
     $replacements = @(Get-FrontendHardcodedReplacements $Language)
     $patchedFiles = 0
     $patchedStrings = 0
+    $fileIndex = 0
     foreach ($file in $jsFiles) {
+        $fileIndex += 1
         $text = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8)
         $patched = $text
         $count = 0
         foreach ($pair in $replacements) {
             $source = $pair[0]
             $target = $pair[1]
+            if (-not $patched.Contains($source)) {
+                continue
+            }
             $result = Replace-FrontendHardcodedText $patched $source $target
             if ($result["Count"] -gt 0) {
                 $patched = $result["Text"]
@@ -1769,6 +1774,9 @@ function Patch-HardcodedFrontendStrings {
             [System.IO.File]::WriteAllText($file.FullName, $patched, $Utf8NoBom)
             $patchedFiles += 1
             $patchedStrings += $count
+            Write-Host "  patched file $fileIndex/$($jsFiles.Count): $($file.Name) ($count replacements)" -ForegroundColor DarkGray
+        } else {
+            Write-Host "  skipping file $fileIndex/$($jsFiles.Count): $($file.Name) (no matches)" -ForegroundColor DarkGray
         }
     }
 
